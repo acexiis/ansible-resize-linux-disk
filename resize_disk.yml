@@ -1,0 +1,364 @@
+---
+# First playbook to resize a vCenter disk.
+
+- name: Resize vCenter disk for virtual machine
+  hosts: all
+  gather_facts: no
+  collections:
+    - community.vmware
+  vars_files:
+    - vars.yml
+  vars:
+    ansible_python_interpreter: /Users/x.pierre/.virenv/vcenter/bin/python
+  tasks:
+    - name: Get the hostname from inventory file and set the vm_name
+      set_fact:
+        vm_name: "{{inventory_hostname.split('.')[0] }}"
+
+    - name: Print the VM name
+      debug:
+        var: vm_name
+
+    - name: Get the vm information from vCenter and save vm_info
+      vmware_guest_info:
+        hostname: "{{ item }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        validate_certs: no
+        name: "{{ vm_name }}"
+        datacenter: "{{ datacenter_name }}"
+      register: vm_info
+      failed_when: vm_info is failed
+      ignore_errors: true
+      vars:
+        item: "{{ item }}"
+      loop: "{{ vcenter_hostname }}"
+      delegate_to: localhost
+
+    - name: Check if any vCenter hostname succeeded
+      set_fact:
+        vcenter_hostname_succeeded: "{{ item.item }}"
+      when: item.failed == false
+      loop: "{{ vm_info.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Fail if no vCenter hostname succeeded
+      fail:
+        msg: "All vCenter hostnames failed"
+      when: vcenter_hostname_succeeded is not defined
+
+    - name: Save the selected vCenter hostname
+      set_fact:
+        selected_vcenter_hostname: "{{ vcenter_hostname_succeeded }}"
+      when: vcenter_hostname_succeeded is defined
+
+    - name: Print the selected vCenter hostname
+      debug:
+        msg: "{{ selected_vcenter_hostname }}"
+
+    - name: Check if snapshot exists
+      vmware_guest_snapshot_info:
+        hostname: "{{ vcenter_hostname_succeeded }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        datacenter: "{{ datacenter_name }}"
+        uuid: "{{ vm_info.results[1].instance.hw_product_uuid}}"
+        validate_certs: no
+      delegate_to: localhost
+      register: snapshot_facts
+
+    - name: Find Guest's Folder using name
+      vmware_guest_find:
+        hostname: "{{ selected_vcenter_hostname }}"
+        username: "{{vcenter_username}}"
+        password: "{{vcenter_password}}"
+        validate_certs: no
+        name: "{{vm_name}}"
+      delegate_to: localhost
+      register: vm_facts
+
+    - name: Delete snapshot if it exists
+      vmware_guest_snapshot:
+        hostname: "{{ vcenter_hostname_succeeded }}"
+        username: "{{ vcenter_username }}"
+        datacenter: "{{ datacenter_name }}"
+        uuid: "{{ vm_info.results[1].instance.hw_product_uuid}}"
+        password: "{{ vcenter_password }}"
+        validate_certs: no
+        name: "{{ vm_name }}"
+        folder: "{{vm_facts.folders}}/snapshot"
+        state: absent
+        snapshot_name: "{{ snapshot_facts.guest_snapshots.snapshots[0].name }}"
+      when: snapshot_facts.guest_snapshots | length > 0
+      delegate_to: localhost
+
+    - name: Get disk Information from vCenter and save the disk_information
+      community.vmware.vmware_guest_disk_info:
+        hostname: "{{ selected_vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        datacenter: "{{ datacenter_name }}"
+        name: "{{ vm_name }}"
+      delegate_to: localhost
+      register: disk_information
+      tags: disk_size
+
+    - name: Print the disk information
+      debug:
+        var: disk_information.guest_disk_info["0"].capacity_in_kb
+      tags: disk_size
+
+    - name: Calculate new disk size adding 12G
+      set_fact:
+        new_size_gb: "{{ (disk_information.guest_disk_info['0'].capacity_in_kb / 1024 / 1024) + {{ vm_disk_gb }} | round(0, ''ceil'') }}"
+      tags: disk_size
+
+    - name: Print the new_disk size
+      debug:
+        var: new_size_gb
+      tags: disk_size
+
+    - name: Increase disk size on vCenter
+      vmware_guest_disk:
+        hostname: "{{ selected_vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        validate_certs: no
+        datacenter: "{{ datacenter_name }}"
+        name: "{{ vm_name }}"
+        disk:
+          - size_gb: "{{ new_size_gb|int }}"
+            state: present
+            unit_number: 0
+            controller_type: "lsilogic"
+            controller_number: 0
+      tags: [increase_disk]
+      delegate_to: localhost
+  tags: vcenter
+
+# Second playbook to resize the new disk size on the Linux machine
+- name: Resize The Disk on the machine
+  hosts: all
+  become: true
+  remote_user: root
+  connection: ssh
+  environment:
+    PATH: "/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin:/root/bin"
+  vars:
+    ansible_ssh_private_key_file: /Users/x.pierre/.ssh/satellite-priv-key
+    disk: sda
+    unit: GB
+    cache_update: false
+    cache_path: "/tmp/{{ inventory_hostname }}-{{ disk }}-part_info.json"
+    last_number: "{{ part_info.partitions|map(attribute='num')|max }}"
+    last_end: "{{ part_info.partitions|map(attribute='end')|max }}"
+    next_number: "{{ last_number|int + 1 }}"
+    next_part_start: "{{ last_end }}{{ unit }}"
+    next_part_end: "{{ last_end|float + part_size|float }}{{ unit }}"
+    part_size: 12
+
+  tasks:
+    - name: Extend disk if FREE size is available
+      ansible.builtin.shell: vgs | grep vg0|awk '{print $7}'| grep "g$" | sed 's/[^0-9]*\([0-9]*\).*/\1/'
+      register: available
+    
+    - name: Extend With available FREE SIZE
+      block:
+        - name: Print available size
+          debug:
+            msg: "{{ available.stdout }}"
+
+        - name: Get the mount point /  name
+          ansible.builtin.shell: df -h | grep "/$" | awk '{print $1}'
+          register: mount_point_root
+
+        - name: Get the mount point /var name
+          ansible.builtin.shell: df -h | grep "/var$" | awk '{print $1}'
+          register: mount_point_var
+
+        - name: Print mount point root
+          debug:
+            msg: "{{ mount_point_root.stdout }}"
+
+        - name: Print mount point var
+          debug:
+            msg: "{{ mount_point_var.stdout }}"
+
+        - name: Check available space for "/"
+          shell: df -h / | awk 'NR==2 {print $4}' | sed 's/G//'
+          register: root_space
+          changed_when: false
+
+        - name: Check available space for "/var"
+          shell: df -h /var | awk 'NR==2 {print $4}' | sed 's/G//'
+          register: var_space
+          changed_when: false
+
+        - name: Calculate additional space required for "/"
+          set_fact:
+            additional_space_root: "{{ 6 - root_space.stdout|int }}"
+
+        - name: Calculate additional space required for "/var"
+          set_fact:
+            additional_space_var: "{{ 6 - var_space.stdout|int }}"
+
+        - name: Resize "/" if necessary
+          command: lvextend -L +{{ additional_space_root }}G "{{ mount_point_root.stdout }}"
+          when: root_space.stdout|int < 6 and available.stdout|int > additional_space_root|int
+          
+        - name: Resize "/var" if necessary
+          command: lvextend -L +{{ additional_space_var }}G "{{ mount_point_var.stdout }}"
+          when: var_space.stdout|int < 6
+
+        - name: Resize filesystem for "/"
+          command: resize2fs "{{ mount_point_root.stdout }}"
+          when: root_space.stdout|int < 6
+
+        - name: Resize filesystem for "/var"
+          command: resize2fs "{{ mount_point_var.stdout }}"
+          when: var_space.stdout|int < 6
+      tags: free_size
+      when: available|int >= 5
+
+    - name: Extend with new disk size
+      block:
+        - name: Reboot
+          ansible.builtin.reboot:
+            reboot_timeout: 300
+            msg: "Rebooting machine in 5 seconds"
+
+        - name: Get disk information and save it
+          ansible.builtin.shell: fdisk -l | grep 'Disk /dev/' | awk '{print $2}' | sed 's/://' | grep "sda"
+          register: disk_info
+
+        - name: Print disk_info
+          debug:
+            var: disk_info
+
+        - name: Get partition information and save it
+          parted:
+            device: "/dev/{{ disk }}"
+            unit: "{{ unit }}"
+          register: part_info
+
+        - name: Set disk name
+          set_fact:
+            disk_name: "{{ disk_info.stdout_lines[0] }}"
+
+        - name: Print disk_name
+          debug:
+            msg: "{{ disk_name }}"
+
+        - name: Set number of partion
+          ansible.builtin.shell: lsblk -l |grep sda | tail -n1|awk '{print $1}'| sed 's/sda//'
+          register: number_of_partion
+
+        - name: Add new partition /dev/sdaX
+          parted:
+            device: "{{ disk_name }}"
+            number: "{{ number_of_partion.stdout | int + 1 }}"
+            part_type: primary
+            flags: [lvm]
+            state: present
+            align: optimal
+            part_start: "{{ next_part_start }}"
+            part_end: "{{ next_part_end }}"
+          ignore_errors: yes
+          register: new_partition_created
+
+        - name: Get list of existing partitions
+          shell: lsblk -l | grep 'sda[2-9]' | awk '{print "/dev/" $1}'
+          register: existing_partitions
+          changed_when: false
+        
+        - name: Check if partitions are existing but not used
+          shell: pvs "{{ item }}"
+          register: pvs_output
+          ignore_errors: true
+          loop: "{{ existing_partitions.stdout_lines }}"
+            
+        - name: Create Physical Volume if not existing but partition exists
+          shell: pvcreate "{{ item.item }}"
+          when: "item.failed == true"
+          loop: "{{ pvs_output.results }}"
+          loop_control:
+            loop_var: item
+        
+        - name: Create Physical Volume if not existing but partition exists
+          shell: vgextend vg0 "{{ item.item }}"
+          when: "item.failed == true"
+          loop: "{{ pvs_output.results }}"
+          loop_control:
+            loop_var: item
+
+        - name: Extend disk if FREE size is available
+          ansible.builtin.shell: vgs | grep vg0|awk '{print $7}'| grep "g$" | sed 's/[^0-9]*\([0-9]*\).*/\1/'
+          register: available
+
+        - name: Print available size
+          debug:
+            msg: "{{ available.stdout }}"
+
+        - name: Get the mount point name
+          ansible.builtin.shell: df -h | grep "/$" | awk '{print $1}'
+          register: mount_point_root
+
+        - name: Get the mount point name
+          ansible.builtin.shell: df -h | grep "/var$" | awk '{print $1}'
+          register: mount_point_var
+
+        - name: Print mount point root
+          debug:
+            msg: "{{ mount_point_root.stdout }}"
+
+        - name: Print mount point var
+          debug:
+            msg: "{{ mount_point_var.stdout }}"
+
+        - name: Check available space for "/"
+          shell: df -h / | awk 'NR==2 {print $4}' | sed 's/G//'
+          register: root_space
+          changed_when: false
+
+        - name: Check available space for "/var"
+          shell: df -h /var | awk 'NR==2 {print $4}' | sed 's/G//'
+          register: var_space
+          changed_when: false
+
+        - name: Calculate additional space required for "/"
+          set_fact:
+            additional_space_root: "{{ 6 - root_space.stdout|int }}"
+
+        - name: Calculate additional space required for "/var"
+          set_fact:
+            additional_space_var: "{{ 6 - var_space.stdout|int }}"
+        
+        - name: Print / size to Add
+          debug:
+            var: "{{ additional_space_root }}"
+
+        - name: Resize "/" if necessary
+          command: lvextend -L +{{ additional_space_root }}G "{{ mount_point_root.stdout }}"
+          when: root_space.stdout|int < 6 and available.stdout|int > additional_space_root|int
+          register: lvextend_root
+
+        - name: Resize filesystem for "/"
+          command: resize2fs "{{ mount_point_root.stdout }}"
+          when: lvextend_root.changed
+
+        - name: Print /var size to add
+          debug:
+            msg: "{{ additional_space_var }}"
+
+        - name: Resize "/var" if necessary
+          command: lvextend -L +{{ additional_space_var }}G "{{ mount_point_var.stdout }}"
+          when: var_space.stdout|int < 6 and available.stdout|int > additional_space_var|int
+          register: lvextend_var
+
+        - name: Resize filesystem for "/var"
+          command: resize2fs "{{ mount_point_var.stdout }}"
+          when: lvextend_var.changed
+
+      tags: resize_disk
+  tags: linux_server
