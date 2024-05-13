@@ -1,0 +1,9 @@
+vcenter_username: "username"
+vcenter_password: "password"
+datacenter_name: "datacenter name"
+disk_label: "label for the disl. Probably: Hard disk 1"
+vm_disk_gb: new_size
+vcenter_hostname:
+  - "DC1"
+  - "DC2"
+  - "ETC"
