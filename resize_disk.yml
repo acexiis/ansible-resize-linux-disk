@@ -102,22 +102,18 @@
         name: "{{ vm_name }}"
       delegate_to: localhost
       register: disk_information
-      tags: disk_size
 
     - name: Print the disk information
       debug:
         var: disk_information.guest_disk_info["0"].capacity_in_kb
-      tags: disk_size
 
     - name: Calculate new disk size adding 12G
       set_fact:
         new_size_gb: "{{ (disk_information.guest_disk_info['0'].capacity_in_kb / 1024 / 1024) + {{ vm_disk_gb }} | round(0, ''ceil'') }}"
-      tags: disk_size
 
     - name: Print the new_disk size
       debug:
         var: new_size_gb
-      tags: disk_size
 
     - name: Increase disk size on vCenter
       vmware_guest_disk:
@@ -133,7 +129,6 @@
             unit_number: 0
             controller_type: "lsilogic"
             controller_number: 0
-      tags: [increase_disk]
       delegate_to: localhost
   tags: vcenter
 
@@ -218,7 +213,6 @@
         - name: Resize filesystem for "/var"
           command: resize2fs "{{ mount_point_var.stdout }}"
           when: var_space.stdout|int < 6
-      tags: free_size
       when: available|int >= 5
 
     - name: Extend with new disk size
