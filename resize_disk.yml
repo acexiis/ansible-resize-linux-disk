@@ -152,12 +152,13 @@
     next_part_start: "{{ last_end }}{{ unit }}"
     next_part_end: "{{ last_end|float + part_size|float }}{{ unit }}"
     part_size: 12
+    mount_point_min_size: 6
 
   tasks:
     - name: Extend disk if FREE size is available
       ansible.builtin.shell: vgs | grep vg0|awk '{print $7}'| grep "g$" | sed 's/[^0-9]*\([0-9]*\).*/\1/'
       register: available
-    
+
     - name: Extend with new disk size
       block:
         - name: Reboot
@@ -333,26 +334,26 @@
 
         - name: Calculate additional space required for "/"
           set_fact:
-            additional_space_root: "{{ 6 - root_space.stdout|int }}"
+            additional_space_root: "{{ mount_point_min_size - root_space.stdout|int }}"
 
         - name: Calculate additional space required for "/var"
           set_fact:
-            additional_space_var: "{{ 6 - var_space.stdout|int }}"
+            additional_space_var: "{{ mount_point_min_size - var_space.stdout|int }}"
 
         - name: Resize "/" if necessary
           command: lvextend -L +{{ additional_space_root }}G "{{ mount_point_root.stdout }}"
-          when: root_space.stdout|int < 6 and available.stdout|int > additional_space_root|int
+          when: root_space.stdout|int < mount_point_min_size and available.stdout|int > additional_space_root|int
           
         - name: Resize "/var" if necessary
           command: lvextend -L +{{ additional_space_var }}G "{{ mount_point_var.stdout }}"
-          when: var_space.stdout|int < 6
+          when: var_space.stdout|int < mount_point_min_size
 
         - name: Resize filesystem for "/"
           command: resize2fs "{{ mount_point_root.stdout }}"
-          when: root_space.stdout|int < 6
+          when: root_space.stdout|int < mount_point_min_size
 
         - name: Resize filesystem for "/var"
           command: resize2fs "{{ mount_point_var.stdout }}"
-          when: var_space.stdout|int < 6
+          when: var_space.stdout|int < mount_point_min_size
       when: available|int >= 12
   tags: increase_lvm_size
