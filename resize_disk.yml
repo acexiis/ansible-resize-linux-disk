@@ -8,8 +8,6 @@
     - community.vmware
   vars_files:
     - vars.yml
-  vars:
-    ansible_python_interpreter: /Users/x.pierre/.virenv/vcenter/bin/python
   tasks:
     - name: Get the hostname from inventory file and set the vm_name
       set_fact:

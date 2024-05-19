@@ -1,3 +1,4 @@
+ansible_python_interpreter: /your/python/path
 vcenter_username: "username"
 vcenter_password: "password"
 datacenter_name: "datacenter name"
