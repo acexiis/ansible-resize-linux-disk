@@ -140,8 +140,10 @@
   connection: ssh
   environment:
     PATH: "/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin:/root/bin"
+  vars_files:
+    - vars.yml
+
   vars:
-    ansible_ssh_private_key_file: /Users/x.pierre/.ssh/satellite-priv-key
     disk: sda
     unit: GB
     cache_update: false
