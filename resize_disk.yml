@@ -107,7 +107,9 @@
 
     - name: Calculate new disk size adding 12G
       set_fact:
-        new_size_gb: "{{ (disk_information.guest_disk_info['0'].capacity_in_kb / 1024 / 1024) + {{ vm_disk_gb }} | round(0, ''ceil'') }}"
+        #new_size_gb: "{{ (disk_information.guest_disk_info['0'].capacity_in_kb / 1024 / 1024) + vm_disk_gb | round(0, ''ceil'') }}"
+        new_size_gb: "{{ (disk_information.guest_disk_info['0'].capacity_in_kb / 1024 / 1024) + vm_disk_gb | round(0, 'ceil') }}"
+
 
     - name: Print the new_disk size
       debug:
@@ -156,6 +158,10 @@
     - name: Extend disk if FREE size is available
       ansible.builtin.shell: vgs | grep vg0|awk '{print $7}'| grep "g$" | sed 's/[^0-9]*\([0-9]*\).*/\1/'
       register: available
+    
+    - name: Print available
+      debug:
+        var: available.stdout
 
     - name: Extend with new disk size
       block:
@@ -221,21 +227,6 @@
           loop_control:
             loop_var: item
         
-        - name: Create Physical Volume if not existing but partition exists
-          shell: vgextend vg0 "{{ item.item }}"
-          when: "item.failed == true"
-          loop: "{{ pvs_output.results }}"
-          loop_control:
-            loop_var: item
-
-        - name: Extend disk if FREE size is available
-          ansible.builtin.shell: vgs | grep vg0|awk '{print $7}'| grep "g$" | sed 's/[^0-9]*\([0-9]*\).*/\1/'
-          register: available
-
-        - name: Print available size
-          debug:
-            msg: "{{ available.stdout }}"
-
         - name: Get the mount point name
           ansible.builtin.shell: df -h | grep "/$" | awk '{print $1}'
           register: mount_point_root
@@ -353,5 +344,5 @@
         - name: Resize filesystem for "/var"
           command: resize2fs "{{ mount_point_var.stdout }}"
           when: var_space.stdout|int < mount_point_min_size
-      when: available|int >= 12
+      when: available.stdout|int >= 12
   tags: increase_lvm_size
