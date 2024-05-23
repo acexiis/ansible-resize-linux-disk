@@ -1,5 +1,7 @@
 # Playbook to resize a Linux Redhat server disk and increase vCenter disk size if needed
 
+## TODO:
+  - Split playbook into 2 or 3 difffrents roles
 
 
 ## pre-requierement
