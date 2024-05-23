@@ -107,7 +107,6 @@
 
     - name: Calculate new disk size adding 12G
       set_fact:
-        #new_size_gb: "{{ (disk_information.guest_disk_info['0'].capacity_in_kb / 1024 / 1024) + vm_disk_gb | round(0, ''ceil'') }}"
         new_size_gb: "{{ (disk_information.guest_disk_info['0'].capacity_in_kb / 1024 / 1024) + vm_disk_gb | round(0, 'ceil') }}"
 
 
@@ -143,19 +142,6 @@
   vars_files:
     - vars.yml
 
-  vars:
-    disk: sda
-    unit: GB
-    cache_update: false
-    cache_path: "/tmp/{{ inventory_hostname }}-{{ disk }}-part_info.json"
-    last_number: "{{ part_info.partitions|map(attribute='num')|max }}"
-    last_end: "{{ part_info.partitions|map(attribute='end')|max }}"
-    next_number: "{{ last_number|int + 1 }}"
-    next_part_start: "{{ last_end }}{{ unit }}"
-    next_part_end: "{{ last_end|float + part_size|float }}{{ unit }}"
-    part_size: 12
-    mount_point_min_size: 6
-
   tasks:
     - name: Extend disk if FREE size is available
       ansible.builtin.shell: vgs | grep vg0|awk '{print $7}'| grep "g$" | sed 's/[^0-9]*\([0-9]*\).*/\1/'
@@ -165,6 +151,24 @@
       debug:
         var: available.stdout
 
+    - name: Check available space for "/"
+      shell: df -h / | awk 'NR==2 {print $4}' | sed 's/G//'
+      register: root_space
+      changed_when: false
+
+    - name: Check available space for "/var"
+      shell: df -h /var | awk 'NR==2 {print $4}' | sed 's/G//'
+      register: var_space
+      changed_when: false
+
+    - name: Calculate additional space required for "/"
+      set_fact:
+        additional_space_root: "{{ 6 - root_space.stdout|int }}"
+
+    - name: Calculate additional space required for "/var"
+      set_fact:
+        additional_space_var: "{{ 6 - var_space.stdout|int }}"
+        
     - name: Extend with new disk size
       block:
         - name: Reboot
@@ -228,7 +232,19 @@
           loop: "{{ pvs_output.results }}"
           loop_control:
             loop_var: item
+
+        - name: Get new physical volume to VG
+          ansible.builtin.shell: pvs | grep "\-\-\-"|awk '{print $1}'
+          register: pvs_to_add
         
+        - name: Print new PVS
+          debug:
+            var: pvs_to_add.stdout
+        
+        - name: Add new PVS to vg
+          ansible.builtin.command: "vgextend {{ vg_name }} {{ pvs_to_add.stdout }}"
+          register: add_pvs
+                  
         - name: Get the mount point name
           ansible.builtin.shell: df -h | grep "/$" | awk '{print $1}'
           register: mount_point_root
@@ -245,25 +261,7 @@
           debug:
             msg: "{{ mount_point_var.stdout }}"
 
-        - name: Check available space for "/"
-          shell: df -h / | awk 'NR==2 {print $4}' | sed 's/G//'
-          register: root_space
-          changed_when: false
-
-        - name: Check available space for "/var"
-          shell: df -h /var | awk 'NR==2 {print $4}' | sed 's/G//'
-          register: var_space
-          changed_when: false
-
-        - name: Calculate additional space required for "/"
-          set_fact:
-            additional_space_root: "{{ 6 - root_space.stdout|int }}"
-
-        - name: Calculate additional space required for "/var"
-          set_fact:
-            additional_space_var: "{{ 6 - var_space.stdout|int }}"
-        
-        - name: Print / size to Add
+        - name: Print / size to Add root
           debug:
             var: "{{ additional_space_root }}"
 
@@ -288,7 +286,8 @@
         - name: Resize filesystem for "/var"
           command: resize2fs "{{ mount_point_var.stdout }}"
           when: lvextend_var.changed
-      when: available.stdout|int <= 12
+      #when: available.stdout|int <= 12
+      when: available.stdout|int <= (additional_space_var|int + additional_space_root|int)
       tags: add_new_partition
     
     - name: Extend With available FREE SIZE
@@ -346,5 +345,5 @@
         - name: Resize filesystem for "/var"
           command: resize2fs "{{ mount_point_var.stdout }}"
           when: var_space.stdout|int < mount_point_min_size
-      when: available.stdout|int >= 12
+      when: available.stdout|int >= (additional_space_var|int + additional_space_root|int)
   tags: increase_lvm_size

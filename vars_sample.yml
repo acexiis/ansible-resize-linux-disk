@@ -1,11 +1,24 @@
-ansible_python_interpreter: /your/python/path
-vcenter_username: "username"
+# GENERAL VARS
+ansible_ssh_private_key_file: /your/ssh/key/file
+
+# VCENTER VARS
+vcenter_username: "login"
 vcenter_password: "password"
-datacenter_name: "datacenter name"
-disk_label: "label for the disl. Probably: Hard disk 1"
-vm_disk_gb: new_size
+datacenter_name: "Datacenter name"
+disk_label: "Disk Name"
+vm_disk_gb: size you want to add in GB
 vcenter_hostname:
-  - "DC1"
-  - "DC2"
-  - "ETC"
-ansible_ssh_private_key_file: /PATH/TO/YOUR/SATELLITE/KEY
+  - "datacenter1"
+  - "datacenter2"
+
+# LINUX VARS
+disk: disk name -- EX sda
+unit: GB
+last_number: "{{ part_info.partitions|map(attribute='num')|max }}"
+last_end: "{{ part_info.partitions|map(attribute='end')|max }}"
+next_number: "{{ last_number|int + 1 }}"
+next_part_start: "{{ last_end }}{{ unit }}"
+next_part_end: "{{ last_end|float + part_size|float }}{{ unit }}"
+mount_point_min_size: min partizion size
+vg_name: VG name -- EX vg0
+
