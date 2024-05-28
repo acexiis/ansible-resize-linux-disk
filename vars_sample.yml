@@ -21,4 +21,5 @@ next_part_start: "{{ last_end }}{{ unit }}"
 next_part_end: "{{ last_end|float + part_size|float }}{{ unit }}"
 mount_point_min_size: min partizion size
 vg_name: VG name -- EX vg0
+part_size: 12
 
