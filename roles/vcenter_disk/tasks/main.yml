@@ -1,0 +1,125 @@
+---
+# tasks file for vcenter-disk
+- name: Get the hostname from inventory file and set the vm_name
+  set_fact:
+    vm_name: "{{inventory_hostname.split('.')[0] }}"
+
+- name: Print the VM name
+  debug:
+    var: vm_name
+
+- name: Get the vm information from vCenter and save vm_info
+  vmware_guest_info:
+    hostname: "{{ item }}"
+    username: "{{ vcenter_username }}"
+    password: "{{ vcenter_password }}"
+    validate_certs: no
+    name: "{{ vm_name }}"
+    datacenter: "{{ datacenter_name }}"
+  register: vm_info
+  failed_when: vm_info is failed
+  ignore_errors: true
+  vars:
+    item: "{{ item }}"
+  loop: "{{ vcenter_hostname }}"
+  delegate_to: localhost
+
+- name: Print vm_info
+  debug:
+    var: vm_info.results[1]
+
+- name: Check if any vCenter hostname succeeded
+  set_fact:
+    vcenter_hostname_succeeded: "{{ item.item }}"
+  when: item.failed == false
+  loop: "{{ vm_info.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Fail if no vCenter hostname succeeded
+  fail:
+    msg: "All vCenter hostnames failed"
+  when: vcenter_hostname_succeeded is not defined
+
+- name: Save the selected vCenter hostname
+  set_fact:
+    selected_vcenter_hostname: "{{ vcenter_hostname_succeeded }}"
+  when: vcenter_hostname_succeeded is defined
+
+- name: Print the selected vCenter hostname
+  debug:
+    msg: "{{ selected_vcenter_hostname }}"
+
+- name: Check if snapshot exists
+  vmware_guest_snapshot_info:
+    hostname: "{{ vcenter_hostname_succeeded }}"
+    username: "{{ vcenter_username }}"
+    password: "{{ vcenter_password }}"
+    datacenter: "{{ datacenter_name }}"
+    uuid: "{{ vm_info.results[0].instance.hw_product_uuid}}"
+    validate_certs: no
+  delegate_to: localhost
+  register: snapshot_facts
+
+- name: Find Guest's Folder using name
+  vmware_guest_find:
+    hostname: "{{ selected_vcenter_hostname }}"
+    username: "{{vcenter_username}}"
+    password: "{{vcenter_password}}"
+    validate_certs: no
+    name: "{{vm_name}}"
+  delegate_to: localhost
+  register: vm_facts
+
+- name: Delete snapshot if it exists
+  vmware_guest_snapshot:
+    hostname: "{{ vcenter_hostname_succeeded }}"
+    username: "{{ vcenter_username }}"
+    datacenter: "{{ datacenter_name }}"
+    uuid: "{{ vm_info.results[1].instance.hw_product_uuid}}"
+    password: "{{ vcenter_password }}"
+    validate_certs: no
+    name: "{{ vm_name }}"
+    folder: "{{vm_facts.folders}}/snapshot"
+    state: absent
+    snapshot_name: "{{ snapshot_facts.guest_snapshots.snapshots[0].name }}"
+  when: snapshot_facts.guest_snapshots | length > 0
+  delegate_to: localhost
+
+- name: Get disk Information from vCenter and save the disk_information
+  community.vmware.vmware_guest_disk_info:
+    hostname: "{{ selected_vcenter_hostname }}"
+    username: "{{ vcenter_username }}"
+    password: "{{ vcenter_password }}"
+    datacenter: "{{ datacenter_name }}"
+    name: "{{ vm_name }}"
+  delegate_to: localhost
+  register: disk_information
+
+- name: Print the disk information
+  debug:
+    var: disk_information.guest_disk_info["0"].capacity_in_kb
+
+- name: Calculate new disk size adding 12G
+  set_fact:
+    new_size_gb: "{{ (disk_information.guest_disk_info['0'].capacity_in_kb / 1024 / 1024) + vm_disk_gb | round(0, 'ceil') }}"
+
+- name: Print the new_disk size
+  debug:
+    var: new_size_gb
+
+- name: Increase disk size on vCenter
+  vmware_guest_disk:
+    hostname: "{{ selected_vcenter_hostname }}"
+    username: "{{ vcenter_username }}"
+    password: "{{ vcenter_password }}"
+    validate_certs: no
+    datacenter: "{{ datacenter_name }}"
+    name: "{{ vm_name }}"
+    disk:
+      - size_gb: "{{ new_size_gb|int }}"
+        state: present
+        unit_number: 0
+        controller_type: "lsilogic"
+        controller_number: 0
+  delegate_to: localhost

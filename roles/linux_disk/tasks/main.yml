@@ -1,0 +1,159 @@
+---
+# tasks file for linux-disk
+- name: Register available VGS space
+  ansible.builtin.shell: vgs | grep vg0|awk '{print $7}'| grep "g$" | sed 's/[^0-9]*\([0-9]*\).*/\1/'
+  register: available
+
+- name: Print available size
+  debug:
+    msg: "{{ available.stdout }}"
+
+- name: Check available space for "/"
+  shell: df -h / | awk 'NR==2 {print $4}' | sed 's/G//'
+  register: root_space
+  changed_when: false
+
+- name: Check available space for "/var"
+  shell: df -h /var | awk 'NR==2 {print $4}' | sed 's/G//'
+  register: var_space
+  changed_when: false
+
+- name: Calculate additional space required for "/"
+  set_fact:
+    additional_space_root: "{{ mount_point_min_size - root_space.stdout|int }}"
+
+- name: Calculate additional space required for "/var"
+  set_fact:
+    additional_space_var: "{{ mount_point_min_size - var_space.stdout|int }}"
+
+- name: Print total_space needed
+  debug:
+    msg: "{{ additional_space_root|int + additional_space_var|int }}"
+
+- name: Resize VGS
+  block:
+  - name: Reboot
+    ansible.builtin.reboot:
+      reboot_timeout: 300
+      msg: "Rebooting machine in 5 seconds to apply new disk"
+  
+  - name: Get disk information and save it
+    ansible.builtin.shell: fdisk -l | grep 'Disk /dev/' | awk '{print $2}' | sed 's/://' | grep "sda"
+    register: disk_info
+  
+  - name: Print disk_info
+    debug:
+      var: disk_info
+  
+  - name: Get partition information and save it
+    parted:
+      device: "/dev/{{ disk }}"
+      unit: "{{ unit }}"
+    register: part_info
+  
+  - name: Set disk name
+    set_fact:
+      disk_name: "{{ disk_info.stdout_lines[0] }}"
+  
+  - name: Print disk_name
+    debug:
+      msg: "{{ disk_name }}"
+  
+  - name: Set number of partion
+    ansible.builtin.shell: lsblk -l |grep sda | tail -n1|awk '{print $1}'| sed 's/sda//'
+    register: number_of_partion
+  
+  - name: Add new partition /dev/sdaX
+    parted:
+      device: "{{ disk_name }}"
+      number: "{{ number_of_partion.stdout | int + 1 }}"
+      part_type: primary
+      flags: [lvm]
+      state: present
+      align: optimal
+      part_start: "{{ next_part_start }}"
+      part_end: "{{ next_part_end }}"
+    ignore_errors: yes
+    register: new_partition_created
+  
+  - name: Get list of existing partitions
+    shell: lsblk -l | grep 'sda[2-9]' | awk '{print "/dev/" $1}'
+    register: existing_partitions
+    changed_when: false
+  
+  - name: Check if partitions are existing but not used
+    shell: pvs "{{ item }}"
+    register: pvs_output
+    ignore_errors: true
+    loop: "{{ existing_partitions.stdout_lines }}"
+      
+  - name: Create Physical Volume if not existing but partition exists
+    shell: pvcreate "{{ item.item }}"
+    when: "item.failed == true"
+    loop: "{{ pvs_output.results }}"
+    loop_control:
+      loop_var: item
+  
+  - name: PVS not used
+    ansible.builtin.shell: pvs | grep "\-\-\-" | awk '{print $1}'
+    register: pvs_not_use
+  
+  - name: Print pvs_not_use 
+    debug:
+      msg: "{{ pvs_not_use.stdout }}"
+  
+  - name: Extend VG with new PV
+    ansible.builtin.command: "vgextend {{ vg_name }} {{ pvs_not_use.stdout }}"
+  
+  when: "{{ available.stdout|int < (additional_space_root|int + additional_space_var|int) }}"
+
+- name: Register available VGS space
+  ansible.builtin.shell: vgs | grep vg0|awk '{print $7}'| grep "g$" | sed 's/[^0-9]*\([0-9]*\).*/\1/'
+  register: available
+
+
+############### RESIZE MOUNT POINT 
+- name: resize_mount_point
+  block:
+  - name: Calculate additional space required for "/"
+    set_fact:
+      additional_space_root: "{{ mount_point_min_size - root_space.stdout|int }}"
+  
+  - name: Calculate additional space required for "/var"
+    set_fact:
+      additional_space_var: "{{ mount_point_min_size - var_space.stdout|int }}"
+
+  - name: Get the mount point name
+    ansible.builtin.shell: df -h | grep "/$" | awk '{print $1}'
+    register: mount_point_root
+
+  - name: Get the mount point name
+    ansible.builtin.shell: df -h | grep "/var$" | awk '{print $1}'
+    register: mount_point_var
+
+  - name: Print / size to Add
+    debug:
+      var: "{{ additional_space_root }}"
+  
+  - name: Resize "/" if necessary
+    command: lvextend -L +{{ additional_space_root }}G "{{ mount_point_root.stdout }}"
+    when: (root_space.stdout | int) < mount_point_min_size and (available.stdout | int) > (additional_space_root | int)
+    register: lvextend_root
+  
+  - name: Resize filesystem for "/"
+    command: resize2fs "{{ mount_point_root.stdout }}"
+    when: lvextend_root.changed
+
+  - name: Print /var size to add
+    debug:
+      msg: "{{ additional_space_var }}"
+  
+  - name: Resize "/var" if necessary
+    command: lvextend -L +{{ additional_space_var }}G "{{ mount_point_var.stdout }}"
+    when: var_space.stdout|int < mount_point_min_size and available.stdout|int > additional_space_var|int
+    register: lvextend_var
+  
+  - name: Resize filesystem for "/var"
+    command: resize2fs "{{ mount_point_var.stdout }}"
+    when: lvextend_var.changed
+  when: "{{ available.stdout|int > (additional_space_root|int + additional_space_var|int) }}"
