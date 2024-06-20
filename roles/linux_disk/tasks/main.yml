@@ -13,23 +13,43 @@
   register: root_space
   changed_when: false
 
+- name: Print root space
+  debug:
+    msg: "{{ root_space.stdout }}"
+    
 - name: Check available space for "/var"
   shell: df -h /var | awk 'NR==2 {print $4}' | sed 's/G//'
   register: var_space
   changed_when: false
 
+- name: Print var space
+  debug:
+    msg: "{{ var_space.stdout }}"
+    
 - name: Calculate additional space required for "/"
   set_fact:
-    additional_space_root: "{{ mount_point_min_size - root_space.stdout|int }}"
+    additional_space_root: "{{ mount_point_min_size - root_space.stdout|int if mount_point_min_size > root_space.stdout|int else root_space.stdout|int - mount_point_min_size|int }}"
+
+- name: Print additional_space_root
+  debug:
+    msg: "{{ additional_space_root }}"
 
 - name: Calculate additional space required for "/var"
   set_fact:
-    additional_space_var: "{{ mount_point_min_size - var_space.stdout|int }}"
+    additional_space_var: "{{ mount_point_min_size - var_space.stdout|int if mount_point_min_size > var_space.stdout|int else var_space.stdout|int - mount_point_min_size|int }}"
 
-- name: Print total_space needed
+- name: Print additional_space_var
   debug:
-    msg: "{{ additional_space_root|int + additional_space_var|int }}"
+    msg: "{{ additional_space_var }}"
+    
+- name: Substract the variable with lowest value
+  set_fact:
+    total_space_needed: "{{ (additional_space_root|int, additional_space_var|int)|list|sort(reverse=True)|first }}"
 
+- name: Print total_space_needed
+  debug:
+    msg: "{{ total_space_needed }}"
+    
 - name: Resize VGS
   block:
   - name: Reboot
