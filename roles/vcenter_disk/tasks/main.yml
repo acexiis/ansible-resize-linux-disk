@@ -26,7 +26,7 @@
 
 - name: Print vm_info
   debug:
-    var: vm_info.results[1]
+    var: vm_info.results[0]
 
 - name: Check if any vCenter hostname succeeded
   set_fact:
@@ -56,10 +56,24 @@
     username: "{{ vcenter_username }}"
     password: "{{ vcenter_password }}"
     datacenter: "{{ datacenter_name }}"
-    uuid: "{{ vm_info.results[0].instance.hw_product_uuid}}"
+    uuid: "{{ vm_info.results[0].instance.hw_product_uuid }}"
     validate_certs: no
   delegate_to: localhost
   register: snapshot_facts
+  ignore_errors: true
+  failed_when: snapshot_facts.failed
+
+- name: Check if snapshot exists with result[1] if the initial check failed
+  vmware_guest_snapshot_info:
+    hostname: "{{ vcenter_hostname_succeeded }}"
+    username: "{{ vcenter_username }}"
+    password: "{{ vcenter_password }}"
+    datacenter: "{{ datacenter_name }}"
+    uuid: "{{ vm_info.results[1].instance.hw_product_uuid }}"
+    validate_certs: no
+  delegate_to: localhost
+  register: snapshot_facts
+  when: snapshot_facts.failed
 
 - name: Find Guest's Folder using name
   vmware_guest_find:
@@ -76,7 +90,7 @@
     hostname: "{{ vcenter_hostname_succeeded }}"
     username: "{{ vcenter_username }}"
     datacenter: "{{ datacenter_name }}"
-    uuid: "{{ vm_info.results[1].instance.hw_product_uuid}}"
+    uuid: "{{ vm_info.results[0].instance.hw_product_uuid}}"
     password: "{{ vcenter_password }}"
     validate_certs: no
     name: "{{ vm_name }}"
