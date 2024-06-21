@@ -50,7 +50,7 @@
   debug:
     msg: "{{ selected_vcenter_hostname }}"
 
-- name: Check if snapshot exists
+- name: Check if snapshot exists with primary UUID
   vmware_guest_snapshot_info:
     hostname: "{{ vcenter_hostname_succeeded }}"
     username: "{{ vcenter_username }}"
@@ -59,11 +59,10 @@
     uuid: "{{ vm_info.results[0].instance.hw_product_uuid }}"
     validate_certs: no
   delegate_to: localhost
-  register: snapshot_facts
+  register: snapshot_facts_primary
   ignore_errors: true
-  failed_when: snapshot_facts.failed
 
-- name: Check if snapshot exists with result[1] if the initial check failed
+- name: Check if snapshot exists with secondary UUID
   vmware_guest_snapshot_info:
     hostname: "{{ vcenter_hostname_succeeded }}"
     username: "{{ vcenter_username }}"
@@ -72,9 +71,14 @@
     uuid: "{{ vm_info.results[1].instance.hw_product_uuid }}"
     validate_certs: no
   delegate_to: localhost
-  register: snapshot_facts
-  when: snapshot_facts.failed
+  when: snapshot_facts_primary.failed
+  register: snapshot_facts_secondary
+  ignore_errors: true
 
+- name: Set final snapshot facts
+  set_fact:
+    snapshot_facts: "{{ snapshot_facts_secondary if snapshot_facts_primary.failed else snapshot_facts_primary }}"
+    
 - name: Find Guest's Folder using name
   vmware_guest_find:
     hostname: "{{ selected_vcenter_hostname }}"
