@@ -27,8 +27,15 @@
     msg: "{{ var_space.stdout }}"
     
 - name: Calculate additional space required for "/"
-  set_fact:
-    additional_space_root: "{{ mount_point_min_size - root_space.stdout|int if mount_point_min_size > root_space.stdout|int else root_space.stdout|int - mount_point_min_size|int }}"
+  set_fact: 
+    additional_space_root: >-
+      {% if root_space.stdout|int > 6 %}
+        0
+      {% elif mount_point_min_size > root_space.stdout|int %}
+        {{ mount_point_min_size - root_space.stdout|int }}
+      {% else %}
+        {{ root_space.stdout|int - mount_point_min_size|int }}
+      {% endif %}
 
 - name: Print additional_space_root
   debug:
@@ -36,7 +43,14 @@
 
 - name: Calculate additional space required for "/var"
   set_fact:
-    additional_space_var: "{{ mount_point_min_size - var_space.stdout|int if mount_point_min_size > var_space.stdout|int else var_space.stdout|int - mount_point_min_size|int }}"
+    additional_space_var: >- 
+      {% if var_space.stdout|int > 6 %}
+        0
+      {% elif mount_point_min_size > var_space.stdout|int %}
+        {{ mount_point_min_size - var_space.stdout|int }}
+      {% else %}
+        {{ var_space.stdout|int - mount_point_min_size|int }}
+      {% endif %}
 
 - name: Print additional_space_var
   debug:
